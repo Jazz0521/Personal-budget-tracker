@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Group: {{ group.name }}</h1>
+
+<section class="grid">
+  <div class="card">
+    <h2>Add Member</h2>
+    <div class="row">
+      <input id="m-name" placeholder="Member name">
+      <button onclick="addMember()">Add</button>
+    </div>
+    <ul id="member-list"></ul>
+  </div>
+
+  <div class="card">
+    <h2>Add Group Expense</h2>
+    <div class="row">
+      <input id="e-desc" placeholder="Description">
+      <input id="e-amount" type="number" placeholder="Amount">
+      <input id="e-date" type="date">
+    </div>
+    <div class="row">
+      <select id="e-payer"></select>
+      <select id="e-split-type" onchange="toggleSplit()">
+        <option value="equal">Equal split</option>
+        <option value="ratio">Custom ratios</option>
+      </select>
+    </div>
+    <div id="ratio-wrap" class="row" style="display:none;"></div>
+    <button onclick="addExpense()">Save Expense</button>
+  </div>
+
+  <div class="card">
+    <h2>Balances & Settlements</h2>
+    <button onclick="loadSettlements()">Recompute</button>
+    <div id="balances"></div>
+    <h3>Suggested Transfers</h3>
+    <ul id="transfers"></ul>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Expenses</h2>
+  <table id="exp-table">
+    <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Payer</th><th>Split</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<script>
+const gid = {{ group.id }};
+
+function toggleSplit(){
+  const t = document.getElementById('e-split-type').value;
+  document.getElementById('ratio-wrap').style.display = (t==='ratio') ? 'flex' : 'none';
+}
+
+async function addMember(){
+  const name = document.getElementById('m-name').value;
+  if(!name) return;
+  await fetch(`/api/groups/${gid}/members`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})});
+  document.getElementById('m-name').value='';
+  loadMembers();
+}
+
+async function loadMembers(){
+  const res = await fetch(`/api/groups/${gid}/members`);
+  const members = await res.json();
+  const ul = document.getElementById('member-list');
+  ul.innerHTML = '';
+  const payerSel = document.getElementById('e-payer');
+  const ratioWrap = document.getElementById('ratio-wrap');
+  payerSel.innerHTML='';
+  ratioWrap.innerHTML='';
+  members.forEach(m=>{
+    const li = document.createElement('li'); li.textContent = m.name; ul.appendChild(li);
+    const opt = document.createElement('option'); opt.value=m.id; opt.textContent=m.name; payerSel.appendChild(opt);
+    // ratio inputs
+    const box = document.createElement('div'); box.className = 'ratio-box';
+    box.innerHTML = `<label>${m.name}</label><input type="number" min="0" step="0.1" value="1" id="ratio-${m.id}">`;
+    ratioWrap.appendChild(box);
+  });
+}
+
+async function addExpense(){
+  const desc = document.getElementById('e-desc').value;
+  const amount = document.getElementById('e-amount').value;
+  const date = document.getElementById('e-date').value;
+  const payer_id = document.getElementById('e-payer').value;
+  const split_type = document.getElementById('e-split-type').value;
+  let splits_json = null;
+  if (split_type === 'ratio'){
+    const res = await fetch(`/api/groups/${gid}/members`);
+    const members = await res.json();
+    const splits = {};
+    members.forEach(m=>{
+      const v = parseFloat(document.getElementById('ratio-'+m.id).value||'0');
+      splits[m.id] = v;
+    });
+    splits_json = JSON.stringify(splits);
+  }
+  const payload = {description:desc, amount, date, payer_id, split_type, splits_json};
+  await fetch(`/api/groups/${gid}/expenses`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+  document.getElementById('e-desc').value=''; document.getElementById('e-amount').value=''; document.getElementById('e-date').value='';
+  loadExpenses(); loadSettlements();
+}
+
+async function loadExpenses(){
+  const res = await fetch(`/api/groups/${gid}/expenses`);
+  const exps = await res.json();
+  // Build a map for payer name
+  const mres = await fetch(`/api/groups/${gid}/members`);
+  const members = await mres.json();
+  const id2name = {}; members.forEach(m=>id2name[m.id]=m.name);
+  const tbody = document.querySelector('#exp-table tbody'); tbody.innerHTML='';
+  exps.forEach(e=>{
+    const tr = document.createElement('tr');
+    let split = e.split_type;
+    if (e.split_type==='ratio' && e.splits_json){ split += ' '+e.splits_json; }
+    tr.innerHTML = `<td>${e.date}</td><td>${e.description}</td><td>${e.amount.toFixed(2)}</td><td>${id2name[e.payer_id]}</td><td>${split}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function loadSettlements(){
+  const res = await fetch(`/api/groups/${gid}/settlements`);
+  const data = await res.json();
+  const balances = document.getElementById('balances');
+  const tlist = document.getElementById('transfers');
+  balances.innerHTML = '<ul>'+data.balances.map(b=>`<li>${b.member}: ${b.net}</li>`).join('')+'</ul>';
+  tlist.innerHTML = '';
+  data.transfers.forEach(t=>{
+    const li = document.createElement('li'); li.textContent = `${t.from} → ${t.to}: ${t.amount}`; tlist.appendChild(li);
+  });
+}
+
+loadMembers(); loadExpenses(); loadSettlements();
+</script>
+{% endblock %}

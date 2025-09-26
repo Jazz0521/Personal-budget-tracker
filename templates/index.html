@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="grid">
+  <div class="card">
+    <h2>Add Transaction</h2>
+    <div class="row">
+      <input id="t-date" type="date"/>
+      <select id="t-type">
+        <option value="expense">Expense</option>
+        <option value="income">Income</option>
+      </select>
+      <input id="t-amount" type="number" placeholder="Amount"/>
+    </div>
+    <div class="row">
+      <input id="t-category" type="text" placeholder="Category (e.g., Food, Transport)"/>
+      <input id="t-note" type="text" placeholder="Note (optional)"/>
+      <button onclick="addTransaction()">Add</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Set Budget (per category / per month)</h2>
+    <div class="row">
+      <input id="b-month" type="month"/>
+      <input id="b-category" type="text" placeholder="Category"/>
+      <input id="b-limit" type="number" placeholder="Limit"/>
+      <button onclick="addBudget()">Save</button>
+    </div>
+    <div id="budget-bars"></div>
+  </div>
+
+  <div class="card">
+    <h2>Groups</h2>
+    <div class="row">
+      <input id="g-name" type="text" placeholder="New group name">
+      <button onclick="createGroup()">Create</button>
+    </div>
+    <ul id="group-list"></ul>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Transactions</h2>
+  <div class="row">
+    <input id="f-start" type="date">
+    <input id="f-end" type="date">
+    <select id="f-type">
+      <option value="">All</option>
+      <option value="income">Income</option>
+      <option value="expense">Expense</option>
+    </select>
+    <input id="f-category" placeholder="Category">
+    <input id="f-q" placeholder="Search note">
+    <button onclick="loadTransactions()">Filter</button>
+  </div>
+  <table id="tx-table">
+    <thead><tr><th>Date</th><th>Type</th><th>Category</th><th>Amount</th><th>Note</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section class="grid">
+  <div class="card">
+    <h2>Category Breakdown (pie)</h2>
+    <div class="row"><input id="s-month" type="month" onchange="loadSummary()"></div>
+    <canvas id="pie"></canvas>
+  </div>
+  <div class="card">
+    <h2>Income vs Expense (bar)</h2>
+    <canvas id="bar"></canvas>
+  </div>
+  <div class="card">
+    <h2>Spending Trend (line)</h2>
+    <canvas id="line"></canvas>
+  </div>
+</section>
+
+<script>
+// Simple state
+let pieChart, barChart, lineChart;
+
+async function addTransaction(){
+  const payload = {
+    date: document.getElementById('t-date').value,
+    ttype: document.getElementById('t-type').value,
+    amount: document.getElementById('t-amount').value,
+    category: document.getElementById('t-category').value,
+    note: document.getElementById('t-note').value
+  };
+  const res = await fetch('/api/transactions', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+  if (res.ok){ loadTransactions(); loadSummary(); }
+}
+
+async function loadTransactions(){
+  const params = new URLSearchParams();
+  ['start','end','type','category','q'].forEach(k=>{
+    const v = document.getElementById(`f-${k}`)?.value;
+    if (v) params.append(k,v);
+  });
+  const res = await fetch('/api/transactions?'+params.toString());
+  const data = await res.json();
+  const tbody = document.querySelector('#tx-table tbody');
+  tbody.innerHTML = '';
+  data.forEach(t=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${t.date}</td><td>${t.type}</td><td>${t.category}</td><td>${t.amount.toFixed(2)}</td><td>${t.note||''}</td>
+                    <td><button onclick="delTx(${t.id})">🗑</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function delTx(id){
+  if (!confirm('Delete transaction?')) return;
+  const res = await fetch('/api/transactions/'+id, {method:'DELETE'});
+  if (res.ok){ loadTransactions(); loadSummary(); }
+}
+
+async function addBudget(){
+  const payload = {
+    month: document.getElementById('b-month').value,
+    category: document.getElementById('b-category').value,
+    limit: document.getElementById('b-limit').value
+  };
+  const res = await fetch('/api/budgets', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+  if (res.ok){ loadSummary(); }
+}
+
+function renderBudgets(budgets){
+  const wrap = document.getElementById('budget-bars');
+  wrap.innerHTML = '';
+  budgets.forEach(b=>{
+    const pct = Math.min(100, Math.round(b.percent));
+    const bar = document.createElement('div');
+    bar.className = 'progress';
+    bar.innerHTML = `<div style="width:${pct}%"></div><span>${b.category}: ${b.used.toFixed(2)}/${b.limit.toFixed(2)} (${pct}%)</span>`;
+    wrap.appendChild(bar);
+  });
+}
+
+async function loadSummary(){
+  const month = document.getElementById('s-month').value;
+  const res = await fetch('/api/summary?month='+(month||''));
+  const s = await res.json();
+
+  // pie
+  const labels = s.categoryTotals.map(x=>x.category);
+  const values = s.categoryTotals.map(x=>x.total);
+  if (pieChart) pieChart.destroy();
+  pieChart = new Chart(document.getElementById('pie'), {type:'pie', data:{labels, datasets:[{data:values}]} });
+
+  // bar
+  if (barChart) barChart.destroy();
+  barChart = new Chart(document.getElementById('bar'), {
+    type:'bar',
+    data:{labels:s.months, datasets:[{label:'Income', data:s.incomeSeries}, {label:'Expense', data:s.expenseSeries}]}
+  });
+
+  // line
+  if (lineChart) lineChart.destroy();
+  lineChart = new Chart(document.getElementById('line'), {
+    type:'line', data:{labels:s.months, datasets:[{label:'Spending', data:s.trendSeries}]}
+  });
+
+  renderBudgets(s.budgets);
+}
+
+async function createGroup(){
+  const name = document.getElementById('g-name').value;
+  const res = await fetch('/api/groups', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})});
+  if (res.ok){ listGroups(); }
+}
+
+async function listGroups(){
+  const ul = document.getElementById('group-list');
+  const res = await fetch('/api/groups');
+  const groups = await res.json();
+  ul.innerHTML='';
+  groups.forEach(g=>{
+    const li = document.createElement('li');
+    li.innerHTML = `<a href="/groups/${g.id}">${g.name}</a>`;
+    ul.appendChild(li);
+  });
+}
+
+// init
+loadTransactions();
+listGroups();
+loadSummary();
+</script>
+{% endblock %}
